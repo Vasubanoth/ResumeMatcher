@@ -1,5 +1,5 @@
 import streamlit as st
-import anthropic
+import google.generativeai as genai
 import pdfplumber
 import io
 import json
@@ -17,11 +17,11 @@ st.set_page_config(
 # ─── API KEY (from Streamlit secrets or env, never shown to user) ────────────
 def get_api_key():
     try:
-        if "ANTHROPIC_API_KEY" in st.secrets:
-            return st.secrets["ANTHROPIC_API_KEY"]
+        if "GEMINI_API_KEY" in st.secrets:
+            return st.secrets["GEMINI_API_KEY"]
     except Exception:
         pass
-    return os.environ.get("ANTHROPIC_API_KEY", "")
+    return os.environ.get("GEMINI_API_KEY", "")
 
 API_KEY = get_api_key()
 
@@ -190,12 +190,12 @@ div[data-testid="stExpander"] summary { color: #7078a0 !important; font-size: 12
 st.markdown("""
 <div class="app-header">
     <div class="app-logo">Resume<span>IQ</span></div>
-    <div class="app-badge">AI-Powered · Claude Sonnet</div>
+    <div class="app-badge">AI-Powered · Gemini 2.5 Flash</div>
 </div>
 """, unsafe_allow_html=True)
 
 if not API_KEY:
-    st.error("⚠️ API key not configured. Add `ANTHROPIC_API_KEY` to Streamlit secrets.")
+    st.error("⚠️ API key not configured. Add `GEMINI_API_KEY` to Streamlit secrets.")
     st.stop()
 
 
@@ -217,7 +217,8 @@ def extract_text_from_pdf(pdf_file) -> str:
 
 # ─── CLAUDE ANALYSIS ──────────────────────────────────────────────────────────
 def analyse_resume(job_desc: str, resume_text: str, role_level: str) -> dict:
-    client = anthropic.Anthropic(api_key=API_KEY)
+    genai.configure(api_key=API_KEY)
+    model = genai.GenerativeModel("gemini-2.5-flash")
     prompt = f"""You are an expert technical recruiter and career coach. Analyse the resume against the job description and return ONLY a valid JSON object (no markdown, no extra text, no code fences).
 
 JOB DESCRIPTION:
@@ -249,12 +250,8 @@ Return this exact JSON structure:
 skill_categories: 3-5 role-relevant categories. Use colors: #4ade80 strong, #facc15 medium, #f87171 weak.
 matched_skills and missing_skills must come directly from JD requirements."""
 
-    msg = client.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=2000,
-        messages=[{"role": "user", "content": prompt}]
-    )
-    clean = re.sub(r"```(?:json)?|```", "", msg.content[0].text).strip()
+    response = model.generate_content(prompt)
+    clean = re.sub(r"```(?:json)?|```", "", response.text).strip()
     return json.loads(clean)
 
 
@@ -370,17 +367,19 @@ with col_r:
     if btn and ready:
         st.session_state.result = None
         st.session_state.err = None
-        with st.spinner("Claude is reading your resume…"):
+        with st.spinner("Gemini is reading your resume…"):
             try:
                 st.session_state.result = analyse_resume(job_desc, resume_text, role_level)
             except json.JSONDecodeError as e:
                 st.session_state.err = f"Parse error — try again. ({e})"
-            except anthropic.AuthenticationError:
-                st.session_state.err = "API key invalid. Contact the app owner."
-            except anthropic.RateLimitError:
-                st.session_state.err = "Rate limit hit — wait a moment and retry."
             except Exception as e:
-                st.session_state.err = str(e)
+                err_str = str(e)
+                if "API_KEY" in err_str or "credentials" in err_str.lower():
+                    st.session_state.err = "Invalid API key. Check your GEMINI_API_KEY in Streamlit secrets."
+                elif "quota" in err_str.lower() or "429" in err_str:
+                    st.session_state.err = "Rate limit hit — wait a moment and retry. (Free tier: 10 req/min)"
+                else:
+                    st.session_state.err = err_str
 
     if st.session_state.err:
         st.error(st.session_state.err)
